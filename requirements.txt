@@ -7,3 +7,4 @@ seaborn
 PyPortfolioOpt
 scikit-learn
 scipy
+openpyxl

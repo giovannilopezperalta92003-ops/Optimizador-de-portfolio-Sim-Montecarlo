@@ -42,6 +42,80 @@ def obtener_risk_free_live():
     except:
         return 0.042
 
+# Mapa de ESPECIE local (BYMA) -> ticker del ADR en Yahoo Finance.
+# Solo para acciones argentinas que cotizan como ADR. Si una acción NO está
+# en este mapa, se asume que no tiene ADR y se le agrega ".BA" (mercado local).
+# Agregá o corregí entradas acá según lo que emita tu matriz.
+ADR_ARG = {
+    "GGAL": "GGAL", "BMA": "BMA", "PAMP": "PAM", "YPFD": "YPF",
+    "TGSU2": "TGS", "CEPU": "CEPU", "CRES": "CRESY", "EDN": "EDN",
+    "IRSA": "IRS", "LOMA": "LOMA", "SUPV": "SUPV", "TECO2": "TEO",
+    "BBAR": "BBAR",
+}
+
+def especie_a_yahoo(especie, seccion):
+    """Convierte la ESPECIE del estado de cuenta al ticker que entiende Yahoo Finance:
+    - CEDEARS: el especie ya es el ticker del subyacente (EE.UU.), va tal cual.
+    - ACCIONES con ADR: usa el ADR (ej. PAMP -> PAM).
+    - ACCIONES sin ADR: agrega '.BA' para traer el dato local de BYMA."""
+    especie = especie.strip().upper()
+    if seccion == "ACCIONES":
+        return ADR_ARG.get(especie, f"{especie}.BA")
+    return especie  # CEDEARS (u otras secciones) van sin cambios
+
+def leer_tickers_desde_estado_cuenta(archivo, secciones=("ACCIONES", "CEDEARS")):
+    """Lee un estado de cuenta de PPI (.xlsx) con secciones por tipo de activo
+    (MONEDAS, ACCIONES, BONOS, CEDEARS, FCI, ONS...) y devuelve los tickers de
+    las secciones pedidas, ya traducidos a formato Yahoo Finance. Por defecto toma
+    solo ACCIONES y CEDEARS, que son los activos que el motor sabe modelar.
+    Si el archivo no tiene ese formato, cae a leer la primera columna como lista."""
+    try:
+        df = pd.read_excel(archivo, header=None)
+    except Exception as e:
+        st.sidebar.error(f"No se pudo leer el Excel: {e}")
+        return None
+
+    if df.empty:
+        st.sidebar.warning("El archivo está vacío.")
+        return None
+
+    secciones_norm = {s.strip().upper() for s in secciones}
+    pares, seccion_actual, detecto_formato = [], None, False
+
+    for fila in df.itertuples(index=False):
+        valores = list(fila)
+        primera = "" if pd.isna(valores[0]) else str(valores[0]).strip()
+        resto = [v for v in valores[1:] if not (pd.isna(v) or str(v).strip() == "")]
+        es_titulo_solo = primera != "" and len(resto) == 0  # celda sola = título de sección
+
+        prim_up = primera.upper()
+
+        if es_titulo_solo:
+            if prim_up in secciones_norm:
+                detecto_formato = True
+                seccion_actual = prim_up
+            else:
+                seccion_actual = None
+            continue
+        if seccion_actual is None:
+            continue
+        if prim_up in {"ESPECIE", "MONEDA"}:     # fila de encabezados de columna
+            continue
+        if prim_up == "SUBTOTAL" or primera == "":
+            continue
+        pares.append((prim_up, seccion_actual))
+
+    # Fallback: archivo simple con una sola columna de tickers (sin secciones)
+    if not detecto_formato:
+        serie = df.iloc[:, 0].dropna().astype(str).str.strip().str.upper()
+        tickers = [t for t in serie if t and t not in {"TICKER", "TICKERS", "ESPECIE", "SYMBOL"}]
+        tickers = list(dict.fromkeys(tickers))
+        return tickers if tickers else None
+
+    tickers = [especie_a_yahoo(e, s) for e, s in pares]
+    tickers = list(dict.fromkeys(tickers))       # saca duplicados, mantiene orden
+    return tickers if tickers else None
+
 # --- 2. MOTOR DE SIMULACIÓN DIARIA (METODOLOGÍA CANOVA-SEGURA) ---
 def generar_simulacion_diaria(mu_h_anual, cov_h_anual, n_sims, dist_type):
     n_assets = len(mu_h_anual)
@@ -139,8 +213,26 @@ with st.sidebar:
     st.header("⚙️ Parámetros")
     cap_inicial = st.number_input("Capital a Invertir ($)", min_value=100.0, value=10000.0)
     n_simulaciones = st.slider("Simulaciones Monte Carlo", 1000, 10000, 2000, 500)
-    tickers_str = st.text_input("Tickers", "AAPL, MSFT, NVDA, GGAL, MELI, TSLA, AMZN, UNH")
-    tickers = [t.strip().upper() for t in tickers_str.split(",")]
+
+    # --- CARGA DE TICKERS: desde estado de cuenta (.xlsx) o a mano ---
+    st.markdown("**Tickers**")
+    archivo_xlsx = st.file_uploader(
+        "Importar estado de cuenta (.xlsx)", type=["xlsx"],
+        help="Subí el estado de cuenta de PPI. Se importan solo las ESPECIES de "
+             "ACCIONES y CEDEARS; se ignoran monedas, bonos, FCI y ONs."
+    )
+
+    tickers_default = "AAPL, MSFT, NVDA, GGAL, MELI, TSLA, AMZN, UNH"
+    tickers_desde_archivo = leer_tickers_desde_estado_cuenta(archivo_xlsx) if archivo_xlsx else None
+
+    if tickers_desde_archivo:
+        tickers = tickers_desde_archivo
+        st.success(f"✅ {len(tickers)} especies cargadas (acciones + cedears).")
+        st.caption(", ".join(tickers))
+    else:
+        tickers_str = st.text_input("O escribilos a mano (separados por coma)", tickers_default)
+        tickers = [t.strip().upper() for t in tickers_str.split(",") if t.strip()]
+
     col_a, col_b = st.columns(2)
     with col_a: f_inicio = st.date_input("Inicio", pd.to_datetime("2021-01-01"))
     with col_b: f_fin = st.date_input("Fin", pd.to_datetime("today"))
