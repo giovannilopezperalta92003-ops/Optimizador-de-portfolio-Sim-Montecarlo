@@ -1,0 +1,12 @@
+streamlit
+pandas
+numpy
+yfinance
+matplotlib
+seaborn
+PyPortfolioOpt
+scikit-learn
+scipy
+openpyxl
+gspread
+google-auth
